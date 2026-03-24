@@ -1,0 +1,5 @@
+node_modules/
+.env
+chatbot_backend-main/node_modules/
+chatbot_frontend-main/node_modules/
+chatbot_backend-main/uploads/
