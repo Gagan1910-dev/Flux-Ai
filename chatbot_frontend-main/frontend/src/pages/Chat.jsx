@@ -32,14 +32,15 @@ const Chat = ({ user, onLogout }) => {
   }, [sessionId]);
 
   useEffect(() => {
+    // Clear current session screen when user logs out/in
+    startNewChat();
     fetchChatHistory();
-    loadSessionMessages(sessionId);
 
     if (window.innerWidth < 768) setSidebarOpen(false);
 
     if (theme === "dark") document.documentElement.classList.add("dark");
     else document.documentElement.classList.remove("dark");
-  }, []);
+  }, [user]);
 
   useEffect(() => {
     if (theme === "dark") {

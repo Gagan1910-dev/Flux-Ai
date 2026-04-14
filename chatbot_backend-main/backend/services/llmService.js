@@ -251,7 +251,7 @@ const generateGroqResponse = async (prompt, stream) => {
       "/chat/completions",
       {
         model: modelName,
-        messages: [{ role: "user", content: prompt }],
+        messages: Array.isArray(prompt) ? prompt : [{ role: "user", content: prompt }],
         // ❗ Groq does NOT support OpenAI-style streaming request flag
         stream: false,
         temperature: 0.7,

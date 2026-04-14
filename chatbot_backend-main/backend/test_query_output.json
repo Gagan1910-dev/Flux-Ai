@@ -1,0 +1,27 @@
+{
+  "queryHasEmbedding": true,
+  "queryEmbeddingLen": 384,
+  "candidateChunksFound": 696,
+  "chunksPreview": [
+    {
+      "score": 0.41659610998322666,
+      "content": "# Results of IV B.Tech I Semester (R16/R19/R20) Regular/Supplementary Examinations, Nov-2025"
+    },
+    {
+      "score": 0.36026604233318116,
+      "content": "| 1419 | 226M1A05A6 | R2041011 | UNIVERSAL HUMAN VALUES 2: UNDERSTANDING, | 30, | A, | 3, |\n| 1420 | 226M1A05A6 | R204104Q | IOT AND APPLICATIONS, | 30, | B, | 3, |\n| 1421 | 226M1A05A6 | R204104V | DATA COMMUNICATIONS, | 27, | A, | 3, |\n| 1422 | 226M1A05A6 | R2041053 | MEAN STACK TECHNOLOGIES-MODULE II-ANGULA | 0, | A, | 2, |"
+    },
+    {
+      "score": 0.3566615158518686,
+      "content": "# Results"
+    },
+    {
+      "score": 0.35245354847847327,
+      "content": "JAWAHARLAL NEHRU TECHNOLOGICAL UNIVERSITY KAKINADA\nResults of IV B.Tech I Semester (R16/R19/R20) Regular/Supplementary Examinations, Nov-2025 \nCollege name: B.V.C. COLLEGE OF ENGINEERING:6M\n, -----------------------------------------------------------------------------------------------------------------------"
+    },
+    {
+      "score": 0.3499845305407232,
+      "content": "| 1011 | 226M1A0547 | R2041011 | UNIVERSAL HUMAN VALUES 2: UNDERSTANDING, | 29, | C, | 3, |\n| 1012 | 226M1A0547 | R204104Q | IOT AND APPLICATIONS, | 27, | B, | 3, |\n| 1013 | 226M1A0547 | R204104V | DATA COMMUNICATIONS, | 29, | B, | 3, |\n| 1014 | 226M1A0547 | R2041053 | MEAN STACK TECHNOLOGIES-MODULE II-ANGULA | 0, | A, | 2, |"
+    }
+  ]
+}

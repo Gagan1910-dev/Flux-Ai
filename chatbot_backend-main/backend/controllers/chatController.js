@@ -219,8 +219,12 @@ export const getChatHistory = async (req, res) => {
     }
 
     const query = {};
-    if (userId) query.userId = userId;
-    else if (guestId) query.guestId = guestId;
+    if (userId) {
+       query.userId = userId;
+    } else if (guestId) {
+       query.guestId = guestId;
+       query.userId = { $in: [null, undefined] }; // Strongly isolate guest chats from user chats
+    }
 
     if (sessionId) query.sessionId = sessionId;
 
@@ -245,9 +249,12 @@ export const updateChatStatus = async (req, res) => {
     const userId = req.user?.userId;
 
     const query = { sessionId };
-    if (userId) query.userId = userId;
-    else if (guestId) query.guestId = guestId;
-    else return res.status(401).json({ error: "Unauthorized" });
+    if (userId) {
+       query.userId = userId;
+    } else if (guestId) {
+       query.guestId = guestId;
+       query.userId = { $in: [null, undefined] };
+    } else return res.status(401).json({ error: "Unauthorized" });
 
     const updateFields = {};
     if (isPinned !== undefined) updateFields.isPinned = isPinned;
@@ -261,7 +268,7 @@ export const updateChatStatus = async (req, res) => {
     );
 
     if (!updatedChat) {
-      return res.status(404).json({ error: "Chat not found" });
+      return res.status(404).json({ error: "Chat not found or unauthorized" });
     }
 
     res.json(updatedChat);
@@ -281,14 +288,17 @@ export const deleteChat = async (req, res) => {
     const userId = req.user?.userId;
 
     const query = { sessionId };
-    if (userId) query.userId = userId;
-    else if (guestId) query.guestId = guestId;
-    else return res.status(401).json({ error: "Unauthorized" });
+    if (userId) {
+       query.userId = userId;
+    } else if (guestId) {
+       query.guestId = guestId;
+       query.userId = { $in: [null, undefined] };
+    } else return res.status(401).json({ error: "Unauthorized" });
 
     const deletedChat = await ChatHistory.findOneAndDelete(query);
 
     if (!deletedChat) {
-      return res.status(404).json({ error: "Chat not found" });
+      return res.status(404).json({ error: "Chat not found or unauthorized" });
     }
 
     res.json({ message: "Chat deleted" });
