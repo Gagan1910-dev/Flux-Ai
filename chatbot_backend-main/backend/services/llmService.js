@@ -243,8 +243,7 @@ const generateGroqResponse = async (prompt, stream) => {
     throw new Error("Groq API key not configured");
   }
 
-  // ✅ FIX: use valid Groq model
-  const modelName = process.env.GROQ_MODEL || "llama-3.1-8b-instant";
+  const modelName = process.env.GROQ_MODEL || "openai/gpt-oss-120b";
 
   try {
     const response = await client.post(

@@ -51,16 +51,28 @@ app.get('/api/health', (req, res) => {
 });
 
 // Connect to MongoDB
-mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/chatbot')
+// Connect to MongoDB Atlas ONLY. Remove local fallback to ensure deployment uses Atlas.
+const mongoUri = process.env.MONGODB_URI;
+if (!mongoUri) {
+  console.error('❌ MONGODB_URI not set. Please set MONGODB_URI in your .env with the Atlas connection string.');
+  process.exit(1);
+}
+
+mongoose.connect(mongoUri)
   .then(() => {
-    console.log('✅ MongoDB connected successfully');
+    console.log('✅ MongoDB connected (Atlas)');
     app.listen(PORT, () => {
       console.log(`🚀 Server running on port ${PORT}`);
       console.log(`🔒 Secure document access control: ACTIVE`);
     });
   })
   .catch((error) => {
-    console.error('❌ MongoDB connection error:', error);
+    console.error('❌ MongoDB Atlas connection error:', error.message || error);
+    console.error('Hints:');
+    console.error('- Ensure your Atlas Network Access whitelist includes your current IP or 0.0.0.0/0 for testing.');
+    console.error('- Verify the DB user and password (reset password in Atlas if unsure).');
+    console.error('- If your password contains special characters, URL-encode it before placing it in the URI.');
+    console.error('- If SRV DNS lookups fail, copy the "Standard connection string" (non-+srv) from Atlas and use that instead.');
     process.exit(1);
   });
 
