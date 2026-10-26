@@ -135,8 +135,8 @@ You must analyze the relationship between the user question and the reference co
 }
 
 RULES FOR VERIFICATION STATES:
-- "supported": The reference context directly answers the question with clear evidence.
-- "insufficient": The reference context does NOT contain enough facts to answer the question, or the topic is not covered. State honestly that the evidence is insufficient and what is missing.
+- "supported": The reference context directly answers the question with clear evidence. Answer directly, clearly, and naturally in clean Markdown.
+- "insufficient": The reference context does NOT contain enough facts to answer the question, or the topic is not covered. State this in a helpful, conversational, and user-friendly tone (e.g. "I couldn't find information about [topic] in the available organizational documents. You can ask me about company policies, leave entitlements, remote work allowances, or other topics covered by your organization's documents."). Do NOT use cold, robotic phrases like "based on the supplied reference material" or "as an AI with no reference context". State what is missing in missingInformation, and provide a helpful suggested question in suggestedFollowUp.
 - "conflicting": Two or more reference documents contain contradictory claims on the same topic (e.g. differing policy numbers, opposing rules, mismatching allowances). Detail both claims objectively. Do not arbitrarily choose one as authoritative unless an official supersede date is specified.
 
 OUTPUT FORMAT: Return raw JSON only. Do not prefix or suffix with explanations.`;
@@ -230,16 +230,42 @@ export const parseVerificationResponse = (rawText, chunks = [], faqs = []) => {
 
   // Strict enforcement: if zero documents or FAQs exist for this access level, force 'insufficient'
   const totalEvidenceCount = (chunks ? chunks.length : 0) + (faqs ? faqs.length : 0);
-  if (totalEvidenceCount === 0) {
+  if (totalEvidenceCount === 0 && parsed.verificationState !== 'conversational') {
     parsed.verificationState = 'insufficient';
     if (!parsed.missingInformation) {
       parsed.missingInformation = 'No matching organizational documents found for your access level.';
     }
   }
 
-  const validStates = ['supported', 'insufficient', 'conflicting'];
+  const validStates = ['supported', 'insufficient', 'conflicting', 'conversational'];
   if (!validStates.includes(parsed.verificationState)) {
     parsed.verificationState = totalEvidenceCount > 0 ? 'supported' : 'insufficient';
+  }
+
+  // 💬 Conversational Polish: Ensure insufficient evidence answers sound friendly and natural
+  if (parsed.verificationState === 'insufficient') {
+    let rawAnswer = parsed.answer || cleaned;
+    
+    // Polish robotic openers
+    if (
+      /unable to provide .* based on the supplied reference material/i.test(rawAnswer) ||
+      /^based on the (provided|supplied) reference (material|documents)[,\s]*/i.test(rawAnswer) ||
+      /^the provided reference documents? do not contain/i.test(rawAnswer) ||
+      /^i am unable to (find|provide)/i.test(rawAnswer)
+    ) {
+      rawAnswer = rawAnswer
+        .replace(/^I('m| am) unable to provide .* based on the supplied reference material\.?\s*/i, "I couldn't find that information in the available documents. You can ask me about company policies, leave entitlements, remote work stipends, or other topics covered by your organization's documents.")
+        .replace(/^based on the (provided|supplied) reference (material|documents)[,\s]*/i, "According to the available documents, ")
+        .replace(/^the provided reference documents? do not contain any information regarding\s*/i, "I couldn't find information in the available documents regarding ")
+        .replace(/^the provided reference documents? do not contain\s*/i, "The available documents do not contain ");
+    }
+    
+    parsed.answer = rawAnswer;
+
+    // Ensure suggestedFollowUp is natural and grounded in available topics rather than repeating missing context
+    if (!parsed.suggestedFollowUp || /insufficient|relocation|not available|unavailable/i.test(parsed.suggestedFollowUp)) {
+      parsed.suggestedFollowUp = "What is the annual leave entitlement for employees?";
+    }
   }
 
   // Ground-truth source citations directly from MongoDB chunks
@@ -262,8 +288,8 @@ export const parseVerificationResponse = (rawText, chunks = [], faqs = []) => {
   // Genuinely associated supporting sources
   let supportingSources = [];
 
-  if (parsed.verificationState === 'insufficient') {
-    // For insufficient answers, NEVER present unrelated passages as supporting proof!
+  if (parsed.verificationState === 'insufficient' || parsed.verificationState === 'conversational') {
+    // For insufficient or conversational answers, NEVER present unrelated passages as supporting proof!
     supportingSources = [];
   } else if (parsed.verificationState === 'conflicting') {
     // For conflicting answers, identify the contradictory sources
@@ -296,6 +322,7 @@ export const parseVerificationResponse = (rawText, chunks = [], faqs = []) => {
     supported: 'Supported by sources',
     insufficient: 'Insufficient evidence',
     conflicting: 'Conflicting sources detected',
+    conversational: 'Conversational response',
   };
 
   return {

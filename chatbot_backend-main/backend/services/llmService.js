@@ -237,21 +237,21 @@ const generateDeepSeekResponse = async (prompt, stream) => {
 
 /* ---------------------------- GROQ ----------------------------- */
 
-const generateGroqResponse = async (prompt, stream) => {
+const generateGroqResponse = async (prompt, stream, retryCount = 0) => {
   const client = getGroqClient();
   if (!client) {
     throw new Error("Groq API key not configured");
   }
 
   const modelName = process.env.GROQ_MODEL || "openai/gpt-oss-120b";
+  const fallbackModel = "openai/gpt-oss-20b";
 
   try {
     const response = await client.post(
       "/chat/completions",
       {
-        model: modelName,
+        model: retryCount > 0 ? fallbackModel : modelName,
         messages: Array.isArray(prompt) ? prompt : [{ role: "user", content: prompt }],
-        // ❗ Groq does NOT support OpenAI-style streaming request flag
         stream: false,
         temperature: 0.7,
         max_tokens: 1000,
@@ -261,6 +261,16 @@ const generateGroqResponse = async (prompt, stream) => {
     return response.data.choices[0].message.content;
 
   } catch (error) {
+    const errorData = error.response?.data?.error;
+    const isRateLimit = error.response?.status === 429 || errorData?.code === 'rate_limit_exceeded';
+
+    // Graceful automatic retry with fallback model if rate limit hit
+    if (isRateLimit && retryCount < 2) {
+      console.warn(`Groq rate limit hit. Retrying with ${fallbackModel} (attempt ${retryCount + 1})...`);
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      return generateGroqResponse(prompt, stream, retryCount + 1);
+    }
+
     console.error("Groq API Error:", error.response?.data || error.message);
     throw new Error(error.response?.data?.error?.message || error.message);
   }

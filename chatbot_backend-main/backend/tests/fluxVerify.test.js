@@ -4,6 +4,10 @@ import assert from 'node:assert/strict';
 process.env.NODE_ENV = 'test';
 
 import { parseVerificationResponse, buildContextualPrompt } from '../services/ragService.js';
+import {
+  detectConversationalIntent,
+  buildConversationalVerification,
+} from '../services/conversationalService.js';
 
 describe('FLUX VERIFY — Signature Innovation Engine Test Suite', () => {
 
@@ -184,6 +188,61 @@ describe('FLUX VERIFY — Signature Innovation Engine Test Suite', () => {
       assert.equal(result.verification.conflictDetails.claimA.source, 'Workplace Flexibility Policy 2022');
       assert.equal(result.verification.conflictDetails.claimB.source, 'HR Leave and Benefits Policy 2024');
       assert.equal(result.verification.sources.length, 2);
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────
+  // 4. Conversational UX & Intent Detection
+  // ─────────────────────────────────────────────────────────────
+  describe('4. Conversational UX & Intent Detection', () => {
+    it('should detect simple greetings and return friendly conversational response', () => {
+      const intent = detectConversationalIntent('Hello');
+      assert.ok(intent, 'Intent must be detected for "Hello"');
+      assert.equal(intent.type, 'greeting');
+      assert.match(intent.answer, /Hi! 👋 How can I help you today\?/);
+
+      const verification = buildConversationalVerification(intent);
+      assert.equal(verification.state, 'conversational');
+      assert.equal(verification.statusLabel, 'Conversational');
+      assert.equal(verification.sources.length, 0);
+      assert.equal(verification.retrievedContext.length, 0);
+    });
+
+    it('should detect name and identity questions without running document search', () => {
+      const intent = detectConversationalIntent('May I know your name?');
+      assert.ok(intent, 'Intent must be detected for identity question');
+      assert.equal(intent.type, 'identity');
+      assert.match(intent.answer, /Flux AI/);
+      assert.match(intent.answer, /knowledge assistant/);
+    });
+
+    it('should detect gratitude messages and respond warmly', () => {
+      const intent = detectConversationalIntent('Thank you so much!');
+      assert.ok(intent, 'Intent must be detected for gratitude');
+      assert.equal(intent.type, 'gratitude');
+      assert.match(intent.answer, /You're welcome!/);
+    });
+
+    it('should route queries with substantive policy keywords to RAG pipeline instead of conversational fast-path', () => {
+      const mixedQuery = 'Hello, what is the annual leave entitlement?';
+      const intent = detectConversationalIntent(mixedQuery);
+      assert.equal(intent, null, 'Must return null so substantive policy queries go through RAG retrieval');
+    });
+
+    it('should sanitize robotic insufficient boilerplate into natural, conversational phrasing', () => {
+      const roboticLlm = JSON.stringify({
+        verificationState: 'insufficient',
+        answer: "I'm unable to provide my name based on the supplied reference material.",
+        confidenceReason: 'Topic not covered.',
+        missingInformation: 'No information available.',
+        suggestedFollowUp: null,
+      });
+
+      const result = parseVerificationResponse(roboticLlm, [], []);
+      assert.equal(result.verification.state, 'insufficient');
+      assert.doesNotMatch(result.answer, /based on the supplied reference material/i);
+      assert.match(result.answer, /available documents/i);
+      assert.ok(result.verification.suggestedFollowUp, 'Must provide a natural follow-up question');
     });
   });
 });

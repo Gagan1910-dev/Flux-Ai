@@ -7,6 +7,10 @@ import {
   buildContextualPrompt,
   parseVerificationResponse,
 } from "../services/ragService.js";
+import {
+  detectConversationalIntent,
+  buildConversationalVerification,
+} from "../services/conversationalService.js";
 import { generateResponse } from "../services/llmService.js";
 import { getAllowedAccessLevels } from "../middleware/auth.js";
 import { generateGuestToken } from "../utils/jwt.js";
@@ -59,6 +63,55 @@ export const sendMessage = async (req, res) => {
     let cleanSessionId = `session-${Date.now()}`;
     if (typeof sessionId === 'string' && sessionId.trim().length > 0 && sessionId.length <= 128) {
       cleanSessionId = sessionId.trim().replace(/[^a-zA-Z0-9_-]/g, '');
+    }
+
+    // 💬 FAST-PATH: Graceful handling of greetings, identity, and conversational pleasantries
+    const conversationalIntent = detectConversationalIntent(cleanMessage);
+    if (conversationalIntent) {
+      const answer = conversationalIntent.answer;
+      const verification = buildConversationalVerification(conversationalIntent);
+
+      const historyQuery = { sessionId: cleanSessionId };
+      if (userId) {
+        historyQuery.userId = userId;
+      } else {
+        historyQuery.guestId = guestId;
+        historyQuery.userId = { $in: [null, undefined] };
+      }
+
+      let chatHistory = await ChatHistory.findOne(historyQuery);
+      if (!chatHistory) {
+        chatHistory = new ChatHistory({
+          userId: userId || undefined,
+          guestId: userId ? undefined : guestId,
+          sessionId: cleanSessionId,
+          messages: [],
+          title: "New Chat",
+        });
+      }
+
+      chatHistory.messages.push({ role: "user", content: cleanMessage });
+      chatHistory.messages.push({
+        role: "assistant",
+        content: answer,
+        verification,
+      });
+      await chatHistory.save();
+
+      if (chatHistory.messages.length <= 2) {
+        generateSmartTitle(cleanMessage)
+          .then(async (newTitle) => {
+            await ChatHistory.findByIdAndUpdate(chatHistory._id, { title: newTitle });
+          })
+          .catch(() => {});
+      }
+
+      return res.json({
+        message: answer,
+        verification,
+        sessionId: cleanSessionId,
+        ...(assignedGuestToken ? { guestToken: assignedGuestToken, guestId } : {}),
+      });
     }
 
     // 🔒 STEP 1: Determine allowed access levels

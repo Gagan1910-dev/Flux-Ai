@@ -3,3 +3,5 @@ node_modules/
 chatbot_backend-main/node_modules/
 chatbot_frontend-main/node_modules/
 chatbot_backend-main/uploads/
+.vercel
+FluxAI-frontend-production.zip
