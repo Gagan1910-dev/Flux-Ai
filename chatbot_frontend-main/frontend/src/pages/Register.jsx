@@ -13,7 +13,7 @@ const Register = ({ onLogin }) => {
     // Preview the role that will be assigned based on email domain
     const previewRole = (email) => {
         if (!email) return null;
-        if (email.toLowerCase().endsWith('@company.com')) return 'employee';
+        return 'public';
         return 'public';
     };
 
@@ -26,8 +26,8 @@ const Register = ({ onLogin }) => {
         if (form.password !== form.confirmPassword) {
             return setError('Passwords do not match');
         }
-        if (form.password.length < 6) {
-            return setError('Password must be at least 6 characters');
+        if (form.password.length < 8) {
+            return setError('Password must be at least 8 characters');
         }
 
         setLoading(true);
@@ -132,16 +132,14 @@ const Register = ({ onLogin }) => {
                                 value={form.email}
                                 onChange={handleChange}
                                 required
-                                placeholder="you@example.com or you@company.com"
+                                placeholder="you@example.com"
                                 className="w-full px-4 py-2.5 bg-gray-900 border border-gray-600 text-gray-100 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 placeholder-gray-500 transition-all text-sm"
                             />
                             {/* Role preview */}
                             {predictedRole && (
                                 <div className={`mt-2 flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs font-medium ${roleColors[predictedRole]}`}>
                                     <div className="w-1.5 h-1.5 rounded-full bg-current" />
-                                    You will be assigned role: <span className="font-bold uppercase">{predictedRole}</span>
-                                    {predictedRole === 'employee' && <span className="text-gray-400 font-normal">— company email detected</span>}
-                                    {predictedRole === 'public' && <span className="text-gray-400 font-normal">— external email</span>}
+                                    Account Role: <span className="font-bold uppercase">{predictedRole}</span> (Standard public access)
                                 </div>
                             )}
                         </div>
@@ -157,7 +155,7 @@ const Register = ({ onLogin }) => {
                                 value={form.password}
                                 onChange={handleChange}
                                 required
-                                placeholder="At least 6 characters"
+                                placeholder="At least 8 characters"
                                 className="w-full px-4 py-2.5 bg-gray-900 border border-gray-600 text-gray-100 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 placeholder-gray-500 transition-all text-sm"
                             />
                         </div>

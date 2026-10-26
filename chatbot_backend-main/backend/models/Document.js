@@ -46,6 +46,11 @@ const documentSchema = new mongoose.Schema({
     type: Number,
     default: 0,
   },
+  isDemo: {
+    type: Boolean,
+    default: false,
+    index: true,
+  },
   createdAt: {
     type: Date,
     default: Date.now,

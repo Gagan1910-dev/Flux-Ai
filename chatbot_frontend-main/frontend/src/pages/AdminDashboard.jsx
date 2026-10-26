@@ -287,7 +287,18 @@ const AdminDashboard = ({ user, onLogout }) => {
                         {documents.map(doc => (
                           <tr key={doc._id} className="hover:bg-gray-50 dark:hover:bg-gray-700/30 transition-colors">
                             <td className="px-6 py-4">
-                              <p className="font-semibold text-sm text-gray-900 dark:text-white">{doc.title || doc.originalName}</p>
+                              <div className="flex items-center gap-2">
+                                <p className="font-semibold text-sm text-gray-900 dark:text-white">{doc.title || doc.originalName}</p>
+                                {doc.isDemo ? (
+                                  <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-amber-500/10 text-amber-500 border border-amber-500/20">
+                                    DEMO POLICY
+                                  </span>
+                                ) : (
+                                  <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-blue-500/10 text-blue-500 border border-blue-500/20">
+                                    USER UPLOAD
+                                  </span>
+                                )}
+                              </div>
                               <p className="text-xs text-gray-400">{doc.fileType.toUpperCase()} • {(doc.fileSize / 1024).toFixed(1)} KB</p>
                             </td>
                             <td className="px-6 py-4">

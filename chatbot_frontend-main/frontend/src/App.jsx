@@ -12,7 +12,8 @@ import Login from "./pages/Login";
 import Register from "./pages/Register";
 import AdminLogin from "./pages/AdminLogin";
 import AdminDashboard from "./pages/AdminDashboard";
-import { getAuthToken } from "./utils/auth";
+import api from "./utils/api";
+import { getUserToken, removeAuthToken } from "./utils/auth";
 
 import ThemeToggle from "./components/ui/theme-toggle";
 
@@ -34,7 +35,6 @@ function App() {
   ----------------------------------------- */
   useEffect(() => {
     const savedTheme = localStorage.getItem("theme");
-    // Default to dark if no theme is saved, or if saved is 'dark'
     if (!savedTheme || savedTheme === "dark") {
       document.documentElement.classList.add("dark");
       if (!savedTheme) localStorage.setItem("theme", "dark");
@@ -44,18 +44,31 @@ function App() {
   }, []);
 
   /* -------------------------------
-     CHECK AUTH TOKEN ON START
+     CHECK & VALIDATE AUTH TOKEN ON START
   ------------------------------- */
   useEffect(() => {
-    const token = getAuthToken();
+    const token = getUserToken();
     if (token) {
-      const userData = localStorage.getItem("user");
-      if (userData) {
-        setUser(JSON.parse(userData));
-        setIsAuthenticated(true);
-      }
+      // Validate token with backend /api/auth/me instead of blindly trusting localStorage
+      api.get("/auth/me")
+        .then((response) => {
+          if (response.data?.user) {
+            setUser(response.data.user);
+            setIsAuthenticated(true);
+            localStorage.setItem("user", JSON.stringify(response.data.user));
+          } else {
+            handleLogout();
+          }
+        })
+        .catch(() => {
+          handleLogout();
+        })
+        .finally(() => {
+          setLoading(false);
+        });
+    } else {
+      setLoading(false);
     }
-    setLoading(false);
   }, []);
 
   /* -------------------------------
@@ -69,7 +82,7 @@ function App() {
   };
 
   const handleLogout = () => {
-    localStorage.removeItem("token");
+    removeAuthToken();
     localStorage.removeItem("user");
     setUser(null);
     setIsAuthenticated(false);
@@ -82,7 +95,7 @@ function App() {
     return (
       <div className="flex items-center justify-center min-h-screen bg-gray-50 dark:bg-gray-900 transition-colors">
         <div className="text-xl text-gray-800 dark:text-gray-200">
-          Loading...
+          Loading Flux AI...
         </div>
       </div>
     );
@@ -95,18 +108,12 @@ function App() {
         v7_relativeSplatPath: true,
       }}
     >
-      {/* -----------------------------------------------------------
-          GLOBAL DARK MODE BUTTON — AVAILABLE EVERYWHERE
-      ------------------------------------------------------------ */}
       <div className="fixed top-4 right-4 z-50">
         <ThemeToggle onToggle={toggleTheme} />
       </div>
 
-      {/* -----------------------------------------------------------
-          MAIN ROUTES
-      ------------------------------------------------------------ */}
       <Routes>
-        {/* PUBLIC CHAT (handles guest/user logic internally) */}
+        {/* PUBLIC CHAT */}
         <Route path="/" element={<Chat user={user} onLogout={handleLogout} />} />
 
         {/* AUTH ROUTES */}
@@ -119,7 +126,7 @@ function App() {
           element={isAuthenticated ? <Navigate to="/" /> : <Register onLogin={handleLogin} />}
         />
 
-        {/* ADMIN ROUTES */}
+        {/* ADMIN ROUTES (Protected by backend and validated role) */}
         <Route
           path="/admin/login"
           element={
@@ -150,4 +157,3 @@ function App() {
 }
 
 export default App;
-

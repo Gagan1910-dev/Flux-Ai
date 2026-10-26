@@ -1,23 +1,23 @@
-// controllers/chatController.js
-
+import crypto from 'crypto';
 import ChatHistory from "../models/ChatHistory.js";
 import Document from "../models/Document.js";
 import AuditLog from "../models/AuditLog.js";
 import {
   retrieveRelevantContext,
   buildContextualPrompt,
+  parseVerificationResponse,
 } from "../services/ragService.js";
 import { generateResponse } from "../services/llmService.js";
 import { getAllowedAccessLevels } from "../middleware/auth.js";
+import { generateGuestToken } from "../utils/jwt.js";
 
-// Helper: Generate Title
+// Helper: Generate Title (asynchronous, non-blocking)
 const generateSmartTitle = async (firstMessage) => {
   try {
-    const titlePrompt = `Summarize this message into a short, catchy 3-5 word title. Do not use quotes. Message: "${firstMessage}"`;
+    const titlePrompt = `Summarize this message into a short, catchy 3-5 word title. Do not use quotes. Message: "${firstMessage.substring(0, 200)}"`;
     const title = await generateResponse(titlePrompt, false);
-    return title.replace(/"/g, '').trim();
+    return title.replace(/["\n\r]/g, '').trim().substring(0, 60);
   } catch (error) {
-    console.error("Title Generation Failed:", error);
     return "New Conversation";
   }
 };
@@ -27,215 +27,167 @@ const generateSmartTitle = async (firstMessage) => {
 // ─────────────────────────────────────────────────────────────
 export const sendMessage = async (req, res) => {
   try {
-    const { message, sessionId, guestId } = req.body;
-    const userId = req.user?.userId || null;
-    const userRole = req.user?.role || 'guest';
-    const userSessionId = sessionId || `session-${Date.now()}`;
+    const { message, sessionId } = req.body;
 
-    if (!message) {
-      return res.status(400).json({ error: "Message is required" });
+    // Strict input validation (blocks non-strings / NoSQL objects)
+    if (typeof message !== 'string') {
+      return res.status(400).json({ error: "Message must be a plain text string" });
     }
 
-    // ──────────────────────────────────────────────────────────
-    // 🔒 STEP 1: DETERMINE ALLOWED ACCESS LEVELS FOR THIS USER
-    // getAllowedAccessLevels returns null for admin (no filter),
-    // or an array like ['public','employee'] for other roles
-    // ──────────────────────────────────────────────────────────
+    const cleanMessage = message.trim();
+    if (!cleanMessage) {
+      return res.status(400).json({ error: "Message cannot be empty" });
+    }
+    if (cleanMessage.length > 4000) {
+      return res.status(400).json({ error: "Message exceeds maximum allowed length of 4000 characters" });
+    }
+
+    // Determine user or guest identity securely
+    const userId = req.user?.userId || null;
+    let guestId = req.user?.guestId || null;
+    let assignedGuestToken = null;
+
+    // If caller is completely anonymous, provision a signed guest token
+    if (!userId && !guestId) {
+      guestId = `guest_${crypto.randomUUID()}`;
+      assignedGuestToken = generateGuestToken(guestId);
+    }
+
+    const userRole = req.user?.role || 'guest';
+
+    // Validate sessionId format
+    let cleanSessionId = `session-${Date.now()}`;
+    if (typeof sessionId === 'string' && sessionId.trim().length > 0 && sessionId.length <= 128) {
+      cleanSessionId = sessionId.trim().replace(/[^a-zA-Z0-9_-]/g, '');
+    }
+
+    // 🔒 STEP 1: Determine allowed access levels
     const allowedLevels = getAllowedAccessLevels(userRole);
 
-    // ──────────────────────────────────────────────────────────
-    // 🔒 STEP 2: FETCH ONLY AUTHORIZED DOCUMENTS
-    // Server-side filtering BEFORE any LLM context is built
-    // ──────────────────────────────────────────────────────────
-    const docFilter = allowedLevels ? { accessLevel: { $in: allowedLevels } } : {};
-    const authorizedDocuments = await Document.find(docFilter).lean();
-
-    // Extract authorized document IDs for chunk filtering
+    // 🔒 STEP 2: Fetch only authorized, COMPLETED documents
+    const docFilter = { status: 'completed' };
+    if (allowedLevels) {
+      docFilter.accessLevel = { $in: allowedLevels };
+    }
+    const authorizedDocuments = await Document.find(docFilter).select('_id fileType').lean();
     const allowedDocIds = authorizedDocuments.map((doc) => doc._id);
 
-    // Build file URL references for LLM (only from authorized docs)
-    const documentUrls = authorizedDocuments.map((doc) => ({
-      type: doc.fileType === "pdf" ? "pdf" : "document",
-      url: `${process.env.BASE_URL || "https://fluxai-910t.onrender.com"}/api/documents/${doc._id}/download`,
-    }));
-
-    // ──────────────────────────────────────────────────────────
-    // 🔒 STEP 3: RETRIEVE TEXT CONTEXT (role-filtered chunks only)
-    // ──────────────────────────────────────────────────────────
+    // 🔒 STEP 3: Retrieve text context (role-filtered, verified chunks)
     const textContext = await retrieveRelevantContext(
-      message,
-      allowedLevels === null ? null : allowedDocIds   // null = admin sees all
+      cleanMessage,
+      allowedLevels === null ? null : allowedDocIds
     );
 
-    // ──────────────────────────────────────────────────────────
-    // STEP 4: GET CHAT HISTORY (context injection)
-    // ──────────────────────────────────────────────────────────
+    // STEP 4: Retrieve chat history for this specific owner only
     let chatHistory = null;
     let historyMessages = [];
 
-    const query = { sessionId: userSessionId };
-    if (userId) query.userId = userId;
-    else if (guestId) query.guestId = guestId;
-
-    if (userId || guestId) {
-      chatHistory = await ChatHistory.findOne(query);
-      if (chatHistory?.messages) {
-        historyMessages = chatHistory.messages.slice(-10);
-      }
+    const historyQuery = { sessionId: cleanSessionId };
+    if (userId) {
+      historyQuery.userId = userId;
+    } else {
+      historyQuery.guestId = guestId;
+      historyQuery.userId = { $in: [null, undefined] };
     }
 
-    // ──────────────────────────────────────────────────────────
-    // STEP 5: BUILD FINAL PROMPT
-    // ──────────────────────────────────────────────────────────
-    const prompt = buildContextualPrompt(message, textContext, historyMessages);
-
-    const provider = process.env.LLM_PROVIDER?.toLowerCase() || "openai";
-    console.log(`🤖 LLM Provider: ${provider} | User Role: ${userRole} | Allowed Docs: ${allowedDocIds.length}`);
-
-    // ──────────────────────────────────────────────────────────
-    // STEP 6: GROQ MODE (no streaming)
-    // ──────────────────────────────────────────────────────────
-    if (provider === "groq") {
-      try {
-        const response = await generateResponse(prompt, false, documentUrls);
-
-        if (userId || guestId) {
-          if (!chatHistory) {
-            chatHistory = new ChatHistory({
-              userId,
-              guestId,
-              sessionId: userSessionId,
-              messages: [],
-              title: "New Chat",
-            });
-          }
-
-          chatHistory.messages.push({ role: "user", content: message });
-          chatHistory.messages.push({ role: "assistant", content: response });
-
-          if (chatHistory.messages.length <= 2) {
-            const newTitle = await generateSmartTitle(message);
-            chatHistory.title = newTitle;
-          }
-
-          await chatHistory.save();
-        }
-
-        // 🔒 STEP 7: WRITE AUDIT LOG
-        AuditLog.create({
-          userId,
-          userRole,
-          query: message,
-          documentIdsUsed: textContext.chunks.map((c) => c.documentId?._id).filter(Boolean),
-        }).catch((err) => console.error("Audit log error:", err));
-
-        return res.json({ message: response });
-      } catch (err) {
-        console.error("Groq Error:", err);
-        return res.status(500).json({ error: err.message });
-      }
+    chatHistory = await ChatHistory.findOne(historyQuery);
+    if (chatHistory?.messages) {
+      historyMessages = chatHistory.messages.slice(-10);
     }
 
-    // ──────────────────────────────────────────────────────────
-    // STEP 6b: STREAMING MODE (OpenAI / Gemini / Claude / Deepseek)
-    // ──────────────────────────────────────────────────────────
-    res.setHeader("Content-Type", "text/event-stream");
-    res.setHeader("Cache-Control", "no-cache");
-    res.setHeader("Connection", "keep-alive");
+    // STEP 5: Build contextual prompt with prompt-injection defense
+    const prompt = buildContextualPrompt(cleanMessage, textContext, historyMessages);
 
-    let fullResponse = "";
+    // STEP 6: Generate response & verify evidence with Flux Verify
+    const rawLlmResponse = await generateResponse(prompt, false);
+    const { answer, verification } = parseVerificationResponse(
+      rawLlmResponse,
+      textContext.chunks,
+      textContext.faqs
+    );
 
-    try {
-      const stream = await generateResponse(prompt, true, documentUrls);
-
-      for await (const chunk of stream) {
-        const content =
-          chunk.choices?.[0]?.delta?.content ||
-          chunk.text?.() ||
-          chunk.delta?.text ||
-          "";
-
-        if (content) {
-          fullResponse += content;
-          res.write(`data: ${JSON.stringify({ content, done: false })}\n\n`);
-        }
-      }
-
-      res.write(`data: ${JSON.stringify({ content: "", done: true })}\n\n`);
-
-      if (userId || guestId) {
-        if (!chatHistory) {
-          chatHistory = new ChatHistory({
-            userId,
-            guestId,
-            sessionId: userSessionId,
-            messages: [],
-            title: "New Chat",
-          });
-        }
-
-        chatHistory.messages.push({ role: "user", content: message });
-        chatHistory.messages.push({ role: "assistant", content: fullResponse });
-
-        if (chatHistory.messages.length <= 2) {
-          const newTitle = await generateSmartTitle(message);
-          chatHistory.title = newTitle;
-        }
-
-        await chatHistory.save();
-      }
-
-      // 🔒 STEP 7: WRITE AUDIT LOG
-      AuditLog.create({
-        userId,
-        userRole,
-        query: message,
-        documentIdsUsed: textContext.chunks.map((c) => c.documentId?._id).filter(Boolean),
-      }).catch((err) => console.error("Audit log error:", err));
-
-      res.end();
-    } catch (err) {
-      console.error("Streaming Error:", err);
-      res.write(`data: ${JSON.stringify({ error: "Failed to generate response" })}\n\n`);
-      res.end();
+    // STEP 7: Persist conversation history with verification metadata
+    if (!chatHistory) {
+      chatHistory = new ChatHistory({
+        userId: userId || undefined,
+        guestId: userId ? undefined : guestId,
+        sessionId: cleanSessionId,
+        messages: [],
+        title: "New Chat",
+      });
     }
+
+    chatHistory.messages.push({ role: "user", content: cleanMessage });
+    chatHistory.messages.push({
+      role: "assistant",
+      content: answer,
+      verification,
+    });
+    await chatHistory.save();
+
+    // Generate title asynchronously if this is the first exchange
+    if (chatHistory.messages.length <= 2) {
+      generateSmartTitle(cleanMessage)
+        .then(async (newTitle) => {
+          await ChatHistory.findByIdAndUpdate(chatHistory._id, { title: newTitle });
+        })
+        .catch(() => {});
+    }
+
+    // STEP 8: Write Audit Log (non-blocking)
+    AuditLog.create({
+      userId,
+      userRole,
+      query: cleanMessage.substring(0, 500),
+      documentIdsUsed: textContext.chunks.map((c) => c.documentId?._id).filter(Boolean),
+    }).catch((err) => console.error("Audit log error:", err.message));
+
+    return res.json({
+      message: answer,
+      verification,
+      sessionId: cleanSessionId,
+      ...(assignedGuestToken ? { guestToken: assignedGuestToken, guestId } : {}),
+    });
   } catch (err) {
-    console.error("Chat Error:", err);
-    res.status(500).json({ error: err.message });
+    console.error("Chat Error:", err.message);
+    res.status(500).json({ error: "Failed to process chat query" });
   }
 };
 
 // ─────────────────────────────────────────────────────────────
-// GET CHAT HISTORY
+// GET CHAT HISTORY — strictly isolated by verified user or guest token
 // ─────────────────────────────────────────────────────────────
 export const getChatHistory = async (req, res) => {
   try {
-    const userId = req.user?.userId || null;
-    const guestId = req.query.guestId || null;
-    const { sessionId } = req.query;
+    const userId = req.user?.userId;
+    const guestId = req.user?.guestId;
 
+    // Caller must have either a valid user token or a valid guest session token
     if (!userId && !guestId) {
-      return res.status(400).json({ error: "Missing userId or guestId" });
+      return res.json([]);
     }
 
     const query = {};
     if (userId) {
-       query.userId = userId;
-    } else if (guestId) {
-       query.guestId = guestId;
-       query.userId = { $in: [null, undefined] }; // Strongly isolate guest chats from user chats
+      query.userId = userId;
+    } else {
+      query.guestId = guestId;
+      query.userId = { $in: [null, undefined] };
     }
 
-    if (sessionId) query.sessionId = sessionId;
+    if (typeof req.query.sessionId === 'string' && req.query.sessionId.trim()) {
+      query.sessionId = req.query.sessionId.trim().replace(/[^a-zA-Z0-9_-]/g, '');
+    }
 
     const history = await ChatHistory.find(query)
       .sort({ updatedAt: -1 })
-      .limit(20);
+      .limit(30)
+      .lean();
 
     res.json(history);
   } catch (error) {
-    console.error("Get chat history error:", error);
-    res.status(500).json({ error: error.message });
+    console.error("Get chat history error:", error.message);
+    res.status(500).json({ error: "Failed to retrieve conversation history" });
   }
 };
 
@@ -245,21 +197,33 @@ export const getChatHistory = async (req, res) => {
 export const updateChatStatus = async (req, res) => {
   try {
     const { sessionId } = req.params;
-    const { isPinned, isArchived, title, guestId } = req.body;
+    if (!sessionId || typeof sessionId !== 'string') {
+      return res.status(400).json({ error: "Invalid session ID" });
+    }
+
     const userId = req.user?.userId;
+    const guestId = req.user?.guestId;
 
-    const query = { sessionId };
+    if (!userId && !guestId) {
+      return res.status(401).json({ error: "Authentication or valid guest token required" });
+    }
+
+    const query = { sessionId: sessionId.trim() };
     if (userId) {
-       query.userId = userId;
-    } else if (guestId) {
-       query.guestId = guestId;
-       query.userId = { $in: [null, undefined] };
-    } else return res.status(401).json({ error: "Unauthorized" });
+      query.userId = userId;
+    } else {
+      query.guestId = guestId;
+      query.userId = { $in: [null, undefined] };
+    }
 
+    const { isPinned, isArchived, title } = req.body;
     const updateFields = {};
-    if (isPinned !== undefined) updateFields.isPinned = isPinned;
-    if (isArchived !== undefined) updateFields.isArchived = isArchived;
-    if (title !== undefined) updateFields.title = title;
+
+    if (typeof isPinned === 'boolean') updateFields.isPinned = isPinned;
+    if (typeof isArchived === 'boolean') updateFields.isArchived = isArchived;
+    if (typeof title === 'string' && title.trim().length > 0) {
+      updateFields.title = title.trim().substring(0, 100);
+    }
 
     const updatedChat = await ChatHistory.findOneAndUpdate(
       query,
@@ -268,13 +232,13 @@ export const updateChatStatus = async (req, res) => {
     );
 
     if (!updatedChat) {
-      return res.status(404).json({ error: "Chat not found or unauthorized" });
+      return res.status(404).json({ error: "Chat conversation not found or access denied" });
     }
 
     res.json(updatedChat);
   } catch (error) {
-    console.error("Update chat error:", error);
-    res.status(500).json({ error: error.message });
+    console.error("Update chat error:", error.message);
+    res.status(500).json({ error: "Failed to update chat session" });
   }
 };
 
@@ -284,26 +248,33 @@ export const updateChatStatus = async (req, res) => {
 export const deleteChat = async (req, res) => {
   try {
     const { sessionId } = req.params;
-    const { guestId } = req.body;
-    const userId = req.user?.userId;
-
-    const query = { sessionId };
-    if (userId) {
-       query.userId = userId;
-    } else if (guestId) {
-       query.guestId = guestId;
-       query.userId = { $in: [null, undefined] };
-    } else return res.status(401).json({ error: "Unauthorized" });
-
-    const deletedChat = await ChatHistory.findOneAndDelete(query);
-
-    if (!deletedChat) {
-      return res.status(404).json({ error: "Chat not found or unauthorized" });
+    if (!sessionId || typeof sessionId !== 'string') {
+      return res.status(400).json({ error: "Invalid session ID" });
     }
 
-    res.json({ message: "Chat deleted" });
+    const userId = req.user?.userId;
+    const guestId = req.user?.guestId;
+
+    if (!userId && !guestId) {
+      return res.status(401).json({ error: "Authentication or valid guest token required" });
+    }
+
+    const query = { sessionId: sessionId.trim() };
+    if (userId) {
+      query.userId = userId;
+    } else {
+      query.guestId = guestId;
+      query.userId = { $in: [null, undefined] };
+    }
+
+    const deletedChat = await ChatHistory.findOneAndDelete(query);
+    if (!deletedChat) {
+      return res.status(404).json({ error: "Chat conversation not found or access denied" });
+    }
+
+    res.json({ message: "Conversation deleted successfully" });
   } catch (error) {
-    console.error("Delete chat error:", error);
-    res.status(500).json({ error: error.message });
+    console.error("Delete chat error:", error.message);
+    res.status(500).json({ error: "Failed to delete chat session" });
   }
 };

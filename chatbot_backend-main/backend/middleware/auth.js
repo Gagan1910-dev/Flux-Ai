@@ -15,23 +15,30 @@ export const getAllowedAccessLevels = (role) => {
 };
 
 // ─────────────────────────────────────────────────────────────
-// AUTHENTICATION MIDDLEWARE — requires valid JWT
+// AUTHENTICATION MIDDLEWARE — requires valid user JWT
 // ─────────────────────────────────────────────────────────────
 export const authenticate = (req, res, next) => {
   try {
-    const token = req.headers.authorization?.split(' ')[1];
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
 
+    const token = authHeader.split(' ')[1];
     if (!token) {
       return res.status(401).json({ error: 'Authentication required' });
     }
 
     const decoded = verifyToken(token);
-
-    if (!decoded) {
-      return res.status(401).json({ error: 'Invalid or expired token' });
+    if (!decoded || decoded.isGuest || !decoded.userId) {
+      return res.status(401).json({ error: 'Invalid or expired authentication token' });
     }
 
-    req.user = decoded;
+    req.user = {
+      userId: decoded.userId,
+      role: decoded.role || 'public',
+      isGuest: false,
+    };
     next();
   } catch (error) {
     res.status(401).json({ error: 'Authentication failed' });
@@ -39,37 +46,52 @@ export const authenticate = (req, res, next) => {
 };
 
 // ─────────────────────────────────────────────────────────────
-// ADMIN GUARD — must be role=admin
+// ADMIN GUARD — must be authenticated user with role=admin
 // ─────────────────────────────────────────────────────────────
 export const requireAdmin = (req, res, next) => {
-  if (req.user?.role !== 'admin') {
+  if (!req.user || req.user.role !== 'admin' || req.user.isGuest) {
     return res.status(403).json({ error: 'Admin access required' });
   }
   next();
 };
 
 // ─────────────────────────────────────────────────────────────
-// OPTIONAL AUTH — allows anonymous (guest) access
+// OPTIONAL AUTH — supports registered users, signed guests, or anonymous
 // ─────────────────────────────────────────────────────────────
 export const optionalAuth = (req, res, next) => {
   try {
-    const token = req.headers.authorization?.split(' ')[1];
-
-    if (token) {
-      const decoded = verifyToken(token);
-      if (decoded) {
-        req.user = decoded;
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      const token = authHeader.split(' ')[1];
+      if (token) {
+        const decoded = verifyToken(token);
+        if (decoded) {
+          if (decoded.isGuest && decoded.guestId) {
+            req.user = {
+              userId: null,
+              guestId: decoded.guestId,
+              role: 'guest',
+              isGuest: true,
+            };
+            return next();
+          } else if (decoded.userId) {
+            req.user = {
+              userId: decoded.userId,
+              guestId: null,
+              role: decoded.role || 'public',
+              isGuest: false,
+            };
+            return next();
+          }
+        }
       }
     }
 
-    // Fall back to guest if no valid token
-    if (!req.user) {
-      req.user = { userId: null, role: 'guest' };
-    }
-
+    // Default fallback: unauthenticated visitor (no server-verified identity yet)
+    req.user = { userId: null, guestId: null, role: 'guest', isGuest: true };
     next();
   } catch (error) {
-    req.user = { userId: null, role: 'guest' };
+    req.user = { userId: null, guestId: null, role: 'guest', isGuest: true };
     next();
   }
 };

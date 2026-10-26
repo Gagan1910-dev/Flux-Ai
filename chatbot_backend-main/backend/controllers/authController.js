@@ -1,17 +1,24 @@
+import crypto from 'crypto';
 import User from '../models/User.js';
-import { generateToken } from '../utils/jwt.js';
+import { generateToken, generateGuestToken } from '../utils/jwt.js';
 
 // ─────────────────────────────────────────────────────────────
-// AUTO-ASSIGN ROLE BASED ON EMAIL DOMAIN
-// Company email → employee | External → public
+// CREATE GUEST SESSION (Cryptographically signed guest token)
 // ─────────────────────────────────────────────────────────────
-const COMPANY_DOMAIN = '@company.com'; // Change to your actual domain
+export const createGuestSession = async (req, res) => {
+  try {
+    const guestId = `guest_${crypto.randomUUID()}`;
+    const token = generateGuestToken(guestId);
 
-const assignRoleFromEmail = (email) => {
-  if (email.toLowerCase().endsWith(COMPANY_DOMAIN)) {
-    return 'employee';
+    res.json({
+      guestId,
+      token,
+      role: 'guest',
+    });
+  } catch (error) {
+    console.error('Guest session creation error:', error);
+    res.status(500).json({ error: 'Failed to create guest session' });
   }
-  return 'public';
 };
 
 // ─────────────────────────────────────────────────────────────
@@ -21,28 +28,56 @@ export const register = async (req, res) => {
   try {
     const { name, username, email, password } = req.body;
 
-    if (!username || !email || !password) {
+    // Strict scalar type validation (Prevents NoSQL injection objects)
+    if (
+      typeof username !== 'string' ||
+      typeof email !== 'string' ||
+      typeof password !== 'string'
+    ) {
+      return res.status(400).json({ error: 'Username, email, and password must be plain text strings' });
+    }
+
+    const cleanUsername = username.trim();
+    const cleanEmail = email.trim().toLowerCase();
+    const cleanName = typeof name === 'string' ? name.trim() : cleanUsername;
+
+    if (!cleanUsername || !cleanEmail || !password) {
       return res.status(400).json({ error: 'Username, email, and password are required' });
     }
 
-    // Check if user already exists
+    // Email format validation
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(cleanEmail) || cleanEmail.length > 254) {
+      return res.status(400).json({ error: 'Please provide a valid email address' });
+    }
+
+    // Username format validation
+    if (cleanUsername.length < 3 || cleanUsername.length > 50 || !/^[a-zA-Z0-9_.-]+$/.test(cleanUsername)) {
+      return res.status(400).json({ error: 'Username must be 3-50 alphanumeric characters (._- allowed)' });
+    }
+
+    // Password policy
+    if (password.length < 8 || password.length > 128) {
+      return res.status(400).json({ error: 'Password must be between 8 and 128 characters' });
+    }
+
+    // Check if user already exists (strictly sanitized query)
     const existingUser = await User.findOne({
-      $or: [{ email }, { username }],
+      $or: [{ email: cleanEmail }, { username: cleanUsername }],
     });
 
     if (existingUser) {
       return res.status(400).json({ error: 'User with this email or username already exists' });
     }
 
-    // Auto-assign role based on email domain (users cannot choose their own role)
-    const assignedRole = assignRoleFromEmail(email);
-
+    // Least Privilege Principle: Self-registration strictly receives 'public' role.
+    // Privileged roles (employee, manager, admin) must be explicitly granted by an admin.
     const user = new User({
-      name: name || username,
-      username,
-      email,
+      name: cleanName || cleanUsername,
+      username: cleanUsername,
+      email: cleanEmail,
       password,
-      role: assignedRole,
+      role: 'public',
     });
 
     await user.save();
@@ -62,7 +97,7 @@ export const register = async (req, res) => {
     });
   } catch (error) {
     console.error('Registration error:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Registration failed due to a server error' });
   }
 };
 
@@ -73,11 +108,16 @@ export const login = async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    if (!email || !password) {
+    if (typeof email !== 'string' || typeof password !== 'string') {
+      return res.status(400).json({ error: 'Email and password must be plain text strings' });
+    }
+
+    const cleanEmail = email.trim().toLowerCase();
+    if (!cleanEmail || !password) {
       return res.status(400).json({ error: 'Email and password are required' });
     }
 
-    const user = await User.findOne({ email });
+    const user = await User.findOne({ email: cleanEmail });
     if (!user) {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
@@ -102,7 +142,7 @@ export const login = async (req, res) => {
     });
   } catch (error) {
     console.error('Login error:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Login failed due to a server error' });
   }
 };
 
@@ -111,13 +151,18 @@ export const login = async (req, res) => {
 // ─────────────────────────────────────────────────────────────
 export const getMe = async (req, res) => {
   try {
+    if (!req.user?.userId) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+
     const user = await User.findById(req.user.userId).select('-password');
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
     }
     res.json({ user });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    console.error('getMe error:', error);
+    res.status(500).json({ error: 'Failed to retrieve profile' });
   }
 };
 
@@ -131,19 +176,24 @@ export const listUsers = async (req, res) => {
       .sort({ createdAt: -1 });
     res.json({ users });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    console.error('listUsers error:', error);
+    res.status(500).json({ error: 'Failed to retrieve user list' });
   }
 };
 
 // ─────────────────────────────────────────────────────────────
 // UPDATE USER ROLE — admin only
 // Can only promote/demote between public, employee, manager
-// Admin role itself cannot be changed through this endpoint
+// Admin role itself cannot be modified or assigned through this endpoint
 // ─────────────────────────────────────────────────────────────
 export const updateUserRole = async (req, res) => {
   try {
     const { id } = req.params;
     const { role } = req.body;
+
+    if (typeof role !== 'string') {
+      return res.status(400).json({ error: 'Role must be a string' });
+    }
 
     const allowedRoles = ['public', 'employee', 'manager'];
     if (!allowedRoles.includes(role)) {
@@ -155,9 +205,9 @@ export const updateUserRole = async (req, res) => {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    // Protect admin accounts from being downgraded
+    // Protect admin accounts from being modified via role update endpoint
     if (user.role === 'admin') {
-      return res.status(403).json({ error: 'Cannot change role of an admin account' });
+      return res.status(403).json({ error: 'Cannot change role of an administrator account' });
     }
 
     user.role = role;
@@ -174,6 +224,7 @@ export const updateUserRole = async (req, res) => {
       },
     });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    console.error('updateUserRole error:', error);
+    res.status(500).json({ error: 'Failed to update user role' });
   }
 };
